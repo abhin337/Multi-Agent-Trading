@@ -91,7 +91,7 @@ The repository ships with a **`DRY_RUN=true` mode** and **local NSE MCP replay f
 
 ```bash
 # 1. Clone the repository and install dependencies via uv
-git clone https://github.com/abhin337/<repo-name>.git && cd <repo-name> && uv sync
+git clone https://github.com/abhin337/Multi-Agent-Trading.git && cd Multi-Agent-Trading && uv sync
 
 # 2. Configure environment (defaults to DRY_RUN=true and local replay fixtures)
 cp .env.example .env
