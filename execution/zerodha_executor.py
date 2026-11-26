@@ -16,8 +16,10 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
+from dotenv import dotenv_values
 from pydantic import SecretStr
 
 from schemas.models import HITLApprovalToken, HITLDecision, OrderReceipt, OrderRequest
@@ -36,10 +38,14 @@ class _KiteCredentials:
         return "_KiteCredentials(api_key='[REDACTED]', access_token='[REDACTED]')"
 
 
-def _load_kite_credentials() -> _KiteCredentials | None:
-    """Load brokerage credentials exclusively from environment inside execution layer."""
+def _load_kite_credentials(env_file: str | Path = ".env") -> _KiteCredentials | None:
+    """Load brokerage credentials exclusively inside execution layer (env first, then .env)."""
     api_key = os.getenv("KITE_API_KEY", "").strip()
     access_token = os.getenv("KITE_ACCESS_TOKEN", "").strip()
+    if (not api_key or not access_token) and Path(env_file).is_file():
+        file_vars = dotenv_values(env_file)
+        api_key = api_key or (file_vars.get("KITE_API_KEY") or "").strip()
+        access_token = access_token or (file_vars.get("KITE_ACCESS_TOKEN") or "").strip()
     if not api_key or not access_token:
         return None
     return _KiteCredentials(

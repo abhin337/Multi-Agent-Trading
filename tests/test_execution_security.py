@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from execution.zerodha_executor import HITLBypassError, HITLGate, ZerodhaExecutor
+from execution.zerodha_executor import (
+    HITLBypassError,
+    HITLGate,
+    ZerodhaExecutor,
+    _load_kite_credentials,
+)
 from observability.logger import AuditLogger
 from schemas.models import OrderRequest
 
@@ -73,3 +78,21 @@ def test_audit_logger_redacts_kite_secrets(tmp_path: Path) -> None:
     finally:
         os.environ.pop("KITE_API_KEY", None)
         os.environ.pop("KITE_ACCESS_TOKEN", None)
+
+
+def test_load_kite_credentials_reads_dotenv_without_polluting_os_environ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KITE_API_KEY", raising=False)
+    monkeypatch.delenv("KITE_ACCESS_TOKEN", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "KITE_API_KEY=dotenv_key_123\nKITE_ACCESS_TOKEN=dotenv_tok_456\n",
+        encoding="utf-8",
+    )
+    creds = _load_kite_credentials(env_file=env_file)
+    assert creds is not None
+    assert creds.api_key.get_secret_value() == "dotenv_key_123"
+    assert creds.access_token.get_secret_value() == "dotenv_tok_456"
+    assert "KITE_API_KEY" not in os.environ
+    assert "KITE_ACCESS_TOKEN" not in os.environ
