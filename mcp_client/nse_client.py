@@ -184,7 +184,7 @@ class NSEClient:
 
     @staticmethod
     def _decode_tool_result(name: str, result: Any) -> Any:
-        if result.isError:
+        if getattr(result, "is_error", False):
             raise NSEMCPError(f"MCP tool '{name}' returned error: {result.content}")
         if not result.content:
             return None
