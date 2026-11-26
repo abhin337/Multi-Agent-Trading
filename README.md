@@ -28,48 +28,30 @@ This system solves those failure modes through **three core design principles**:
 The diagram below highlights the hard security boundary between untrusted LLM reasoning (read-only) and authenticated brokerage execution (write-only).
 
 ```mermaid
-flowchart TB
-    subgraph RO ["Read-Only Reasoning Zone (Zero Brokerage Credentials)"]
-        direction TB
-        MCP["NSE MCP Client<br/>(Live Quotes, OHLCV, News / Local Replay Mode)"]
-        
-        A1["1. Scanner Agent<br/>(Gemini Structured Output)"]
-        SAN["Input Sanitizer<br/>(Strips Prompt Injections & HTML Comments)"]
-        A2["2. Sentiment Agent<br/>(Gemini Structured Output)"]
-        A3["3. Chart Analyst Agent<br/>(RSI, EMA, Volume, S/R -> TradeProposal)"]
+flowchart LR
+    MCP["NSE MCP<br/>(Quotes, OHLCV, News)"] --> A1
 
-        MCP -->|Market Scan| A1
-        A1 -->|Typed Ticker List| A2
-        MCP -->|Untrusted News| SAN
-        SAN -->|Sanitized Text| A2
-        A2 -->|Sentiment Score| A3
-        MCP -->|Raw OHLCV Data| A3
+    subgraph RO["1. Read-Only Zone (Zero Kite Secrets)"]
+        direction TB
+        A1["Scanner Agent<br/>(NSE Allowlist)"] --> A2["Sentiment Agent<br/>(+ Input Sanitizer)"]
+        A2 --> A3["Chart Analyst<br/>(OHLCV -> Proposal)"]
     end
 
-    subgraph GATE ["Deterministic Guardrail & HITL Boundary"]
+    subgraph GATE["2. Guardrails & HITL"]
         direction TB
-        VAL["Deterministic Validator<br/>• Strict Pydantic JSON Schema<br/>• NSE Ticker Allowlist<br/>• Max Position Cap<br/>• Price Sanity (<=5% from LTP)"]
-        HITL{"Synchronous CLI<br/>HITL Gate<br/>[Approve / Reject]"}
-
-        VAL -->|Validated Payload| HITL
+        VAL["Deterministic Validator<br/>(Schema, Caps, +/-5% Price)"] --> HITL{"CLI HITL Gate<br/>Approve / Reject"}
     end
 
-    subgraph WO ["Isolated Write-Only Execution Zone"]
+    subgraph WO["3. Write-Only Execution"]
         direction TB
-        ENV[("Scoped Zerodha Token<br/>(Env / Secret Store)")]
-        EXEC["Zerodha Executor<br/>(kiteconnect / DRY_RUN Mode)"]
-        ENV -.->|Injected Locally Only| EXEC
+        ENV[("Isolated KITE_*<br/>Secret Store")] -.-> EXEC["Zerodha Executor<br/>(Kite / DRY_RUN)"]
     end
 
-    OBS[("Correlated JSON Audit Logs<br/>(Shared trace_id End-to-End)")]
-
-    A3 -->|Typed TradeProposal| VAL
-    HITL -->|Signed Approval| EXEC
-    HITL -->|Rejected| OBS
-
-    RO -.-> OBS
-    GATE -.-> OBS
-    WO -.-> OBS
+    A3 -->|TradeProposal| VAL
+    HITL -->|Signed Token| EXEC
+    RO -.->|trace_id| OBS[("Correlated JSON<br/>Audit Logs")]
+    GATE -.->|trace_id| OBS
+    WO -.->|trace_id| OBS
 
     style RO fill:#f0f7ff,stroke:#3b82f6,stroke-width:2px
     style GATE fill:#fffbeb,stroke:#f59e0b,stroke-width:2px
@@ -97,7 +79,7 @@ git clone https://github.com/abhin337/Multi-Agent-Trading.git && cd Multi-Agent-
 cp .env.example .env
 
 # 3. Run the multi-agent pipeline in safe dry-run mode
-uv run python orchestrator.py --mode replay --dry-run
+uv run python main.py --auto-approve
 ```
 
 > **Note:** To execute against live NSE MCP feeds or Zerodha paper/live endpoints, populate `GEMINI_API_KEY`, `KITE_API_KEY`, and `KITE_ACCESS_TOKEN` in `.env` and toggle `DRY_RUN=false`. Never commit `.env` files.
