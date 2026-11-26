@@ -123,7 +123,8 @@ class BoundaryValidator:
                     sl_pct = (effective_price - proposal.stop_loss) / effective_price * 100.0
                     if sl_pct > settings.max_stop_loss_pct:
                         reasons.append(
-                            f"stop_loss_cap_exceeded: {sl_pct:.2f}% > {settings.max_stop_loss_pct}%."
+                            f"stop_loss_cap_exceeded: {sl_pct:.2f}% > "
+                            f"{settings.max_stop_loss_pct}%."
                         )
             elif proposal.action == TradeAction.SELL:
                 if proposal.stop_loss <= effective_price:
@@ -132,7 +133,8 @@ class BoundaryValidator:
                     sl_pct = (proposal.stop_loss - effective_price) / effective_price * 100.0
                     if sl_pct > settings.max_stop_loss_pct:
                         reasons.append(
-                            f"stop_loss_cap_exceeded: {sl_pct:.2f}% > {settings.max_stop_loss_pct}%."
+                            f"stop_loss_cap_exceeded: {sl_pct:.2f}% > "
+                            f"{settings.max_stop_loss_pct}%."
                         )
 
         # 5. Deterministic technical & sentiment alignment (guards against handoff drift)

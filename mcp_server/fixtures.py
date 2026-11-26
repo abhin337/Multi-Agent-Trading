@@ -81,7 +81,9 @@ def _generate_bullish_ohlcv(
     return series
 
 
-def _generate_flat_weak_ohlcv(base_price: float, base_volume: int, bars: int = 35) -> list[OHLCVBar]:
+def _generate_flat_weak_ohlcv(
+    base_price: float, base_volume: int, bars: int = 35
+) -> list[OHLCVBar]:
     """Build deterministic range-bound/weak OHLCV bars that should NOT trigger a breakout."""
     start = date(2026, 10, 1)
     series: list[OHLCVBar] = []
@@ -102,7 +104,7 @@ def _generate_flat_weak_ohlcv(base_price: float, base_volume: int, bars: int = 3
 
 
 FIXTURE_OHLCV: dict[str, list[OHLCVBar]] = {
-    "INFY": _generate_bullish_ohlcv(1440.0, 1565.0, 4_200_000, breakout_volume_mult=1.9),
+    "INFY": _generate_bullish_ohlcv(1495.0, 1565.0, 4_200_000, breakout_volume_mult=1.9),
     "TCS": _generate_bullish_ohlcv(3720.0, 3920.0, 2_100_000, breakout_volume_mult=1.75),
     "RELIANCE": _generate_bullish_ohlcv(2780.0, 2945.0, 6_500_000, breakout_volume_mult=1.8),
     "ICICIBANK": _generate_bullish_ohlcv(1195.0, 1280.0, 8_100_000, breakout_volume_mult=1.7),
@@ -153,7 +155,9 @@ FIXTURE_NEWS: dict[str, list[MarketNewsItem]] = {
         MarketNewsItem(
             source="Economic Markets Wire",
             headline="IT index rallies as institutional inflows lift INFY above key resistance",
-            body="Analysts highlight improving operating margins and healthy order book visibility.",
+            body=(
+                "Analysts highlight improving operating margins and healthy order book visibility."
+            ),
             published_at="2026-11-26T10:20:00+05:30",
         ),
     ],

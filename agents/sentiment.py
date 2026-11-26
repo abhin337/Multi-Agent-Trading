@@ -32,10 +32,10 @@ class SentimentAgent:
         self._llm = llm_client
         self._audit = audit_logger
 
-    async def run(self, symbol: str) -> SentimentReport:
+    def run(self, symbol: str) -> SentimentReport:
         """Fetch and sanitize news for symbol, then score sentiment."""
         t0 = time.perf_counter()
-        news_items = await self._nse.get_market_news(symbol)
+        news_items = self._nse.get_market_news(symbol)
 
         sanitized_blocks: list[str] = []
         all_flags: list[str] = []

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 
 from config import get_settings
@@ -33,7 +32,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def _async_main() -> None:
+def main() -> None:
     args = _parse_args()
     settings = get_settings()
     if args.stdio_mcp:
@@ -41,14 +40,10 @@ async def _async_main() -> None:
 
     orchestrator = TradingOrchestrator(settings=settings)
     input_fn = (lambda _prompt: "Approve") if args.auto_approve else input
-    outcome = await orchestrator.run(raw_candidates=args.symbols, hitl_input_fn=input_fn)
+    outcome = orchestrator.run(raw_candidates=args.symbols, hitl_input_fn=input_fn)
     print("\n--- Orchestration Outcome ---")
     print(json.dumps(outcome.model_dump(), indent=2))
     print(f"\nAudit log written to: {orchestrator.audit.log_path} (trace_id={outcome.trace_id})")
-
-
-def main() -> None:
-    asyncio.run(_async_main())
 
 
 if __name__ == "__main__":

@@ -37,11 +37,11 @@ class ScannerAgent:
         self._settings = settings
         self._audit = audit_logger
 
-    async def run(self, raw_candidates: list[str] | None = None) -> ScanResult:
+    def run(self, raw_candidates: list[str] | None = None) -> ScanResult:
         """Validate candidate tickers against the NSE allowlist, fetch quotes, and rank."""
         t0 = time.perf_counter()
         requested = raw_candidates if raw_candidates is not None else list(_DEFAULT_WATCHLIST)
-        await self._nse.list_active_symbols()
+        self._nse.list_active_symbols()
 
         valid_quotes: list[dict[str, object]] = []
         rejected_inputs: list[str] = []
@@ -54,10 +54,14 @@ class ScannerAgent:
                     event_type="scanner_ticker_rejected",
                     component="agents.scanner",
                     status="blocked",
-                    payload={"raw_input": item, "error_code": check.error_code, "reason": check.reason},
+                    payload={
+                        "raw_input": item,
+                        "error_code": check.error_code,
+                        "reason": check.reason,
+                    },
                 )
                 continue
-            quote = await self._nse.get_quote(check.canonical_symbol)
+            quote = self._nse.get_quote(check.canonical_symbol)
             valid_quotes.append(quote.model_dump())
 
         if not valid_quotes:

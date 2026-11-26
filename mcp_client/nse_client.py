@@ -1,7 +1,7 @@
 """Read-only NSE MCP client wrapper.
 
 Supports:
-- 'fixture' mode: deterministic local replay for offline tests and demos.
+- 'fixture' mode: deterministic synchronous local replay for offline tests and demos.
 - 'stdio' mode: connects over MCP stdio transport to mcp_server/nse_server.py.
 
 Zero Zerodha credentials or write-enabled brokerage methods exist in this module.
@@ -9,6 +9,7 @@ Zero Zerodha credentials or write-enabled brokerage methods exist in this module
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -85,7 +86,7 @@ class NSEClient:
             env=safe_env,
         )
 
-    async def _call_stdio_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def _call_stdio_tool_async(self, name: str, arguments: dict[str, Any]) -> Any:
         server_params = self._stdio_server_params()
         async with stdio_client(server_params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
@@ -105,13 +106,16 @@ class NSEClient:
                     return None
                 return json.loads(raw)
 
-    async def list_active_symbols(self) -> dict[str, str]:
+    def _call_stdio_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return asyncio.run(self._call_stdio_tool_async(name, arguments))
+
+    def list_active_symbols(self) -> dict[str, str]:
         """List active NSE symbols via MCP."""
         t0 = time.perf_counter()
         try:
             self._check_fault_injection("list_active_nse_symbols")
             if self.mode == "stdio":
-                data = await self._call_stdio_tool("list_active_nse_symbols", {})
+                data = self._call_stdio_tool("list_active_nse_symbols", {})
                 result = dict(data)
             else:
                 result = dict(ACTIVE_NSE_SYMBOLS)
@@ -128,7 +132,7 @@ class NSEClient:
             )
             raise
 
-    async def get_quote(self, symbol: str) -> NSEQuote:
+    def get_quote(self, symbol: str) -> NSEQuote:
         """Fetch read-only live quote snapshot for an active NSE symbol."""
         normalized = symbol.strip().upper()
         t0 = time.perf_counter()
@@ -137,7 +141,7 @@ class NSEClient:
             if normalized in self._quote_overrides:
                 quote = self._quote_overrides[normalized]
             elif self.mode == "stdio":
-                data = await self._call_stdio_tool("get_nse_quote", {"symbol": normalized})
+                data = self._call_stdio_tool("get_nse_quote", {"symbol": normalized})
                 quote = NSEQuote.model_validate(data)
             else:
                 if normalized not in FIXTURE_QUOTES:
@@ -163,7 +167,7 @@ class NSEClient:
                 raise
             raise NSEMCPError(str(exc)) from exc
 
-    async def get_historical_ohlcv(self, symbol: str, days: int = 30) -> list[OHLCVBar]:
+    def get_historical_ohlcv(self, symbol: str, days: int = 30) -> list[OHLCVBar]:
         """Fetch historical OHLCV bars for an active NSE symbol."""
         normalized = symbol.strip().upper()
         t0 = time.perf_counter()
@@ -172,7 +176,7 @@ class NSEClient:
             if normalized in self._ohlcv_overrides:
                 bars = self._ohlcv_overrides[normalized][-days:]
             elif self.mode == "stdio":
-                data = await self._call_stdio_tool(
+                data = self._call_stdio_tool(
                     "get_historical_ohlcv", {"symbol": normalized, "days": days}
                 )
                 bars = [OHLCVBar.model_validate(row) for row in data]
@@ -200,7 +204,7 @@ class NSEClient:
                 raise
             raise NSEMCPError(str(exc)) from exc
 
-    async def get_market_news(self, symbol: str) -> list[MarketNewsItem]:
+    def get_market_news(self, symbol: str) -> list[MarketNewsItem]:
         """Fetch public news items for an active NSE symbol."""
         normalized = symbol.strip().upper()
         t0 = time.perf_counter()
@@ -209,7 +213,7 @@ class NSEClient:
             if normalized in self._news_overrides:
                 items = self._news_overrides[normalized]
             elif self.mode == "stdio":
-                data = await self._call_stdio_tool("get_market_news", {"symbol": normalized})
+                data = self._call_stdio_tool("get_market_news", {"symbol": normalized})
                 items = [MarketNewsItem.model_validate(row) for row in data]
             else:
                 if normalized not in ACTIVE_NSE_SYMBOLS:

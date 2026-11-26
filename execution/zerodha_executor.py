@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
-from kiteconnect import KiteConnect
 from pydantic import SecretStr
 
 from schemas.models import HITLApprovalToken, HITLDecision, OrderReceipt, OrderRequest
@@ -177,6 +176,8 @@ class ZerodhaExecutor:
             )
 
         try:
+            from kiteconnect import KiteConnect
+
             kite = KiteConnect(api_key=self._credentials.api_key.get_secret_value())
             kite.set_access_token(self._credentials.access_token.get_secret_value())
             variety = getattr(kite, "VARIETY_REGULAR", "regular")

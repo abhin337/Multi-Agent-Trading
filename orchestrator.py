@@ -50,7 +50,7 @@ class TradingOrchestrator:
         self.sentiment = SentimentAgent(self.nse_client, self.llm_client, self.audit)
         self.chart_analyst = ChartAnalystAgent(self.nse_client, self.llm_client, self.audit)
 
-    async def run(
+    def run(
         self,
         raw_candidates: list[str] | None = None,
         hitl_input_fn: Callable[[str], str] = input,
@@ -66,7 +66,7 @@ class TradingOrchestrator:
         )
 
         try:
-            scan_result = await self.scanner.run(raw_candidates)
+            scan_result = self.scanner.run(raw_candidates)
         except NSEMCPError as exc:
             self.audit.log_event(
                 event_type="pipeline_abort_mcp_error",
@@ -96,8 +96,8 @@ class TradingOrchestrator:
         target_symbol = scan_result.selected_symbol
 
         try:
-            sentiment_report = await self.sentiment.run(target_symbol)
-            indicators, live_quote, proposal = await self.chart_analyst.run(
+            sentiment_report = self.sentiment.run(target_symbol)
+            indicators, live_quote, proposal = self.chart_analyst.run(
                 target_symbol, sentiment_report
             )
         except NSEMCPError as exc:

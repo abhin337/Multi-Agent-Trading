@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
@@ -149,14 +147,20 @@ class MockStructuredClient:
             summary = "Simulated sentiment score override for adversarial/eval testing."
         elif any(
             neg in lowered
-            for neg in ("margin compression", "client ramp-downs", "earnings warning", "cancellations")
+            for neg in (
+                "margin compression",
+                "client ramp-downs",
+                "earnings warning",
+                "cancellations",
+            )
         ):
             score = -0.82
             conflict = True
             summary = f"Negative earnings/guidance headlines detected for {symbol}."
         elif "base64_encoded_override" in flags or flags:
             # Neutralize untrusted injected payloads rather than obeying directives
-            if any(pos in lowered for pos in ("cloud", "deal", "rallies", "wins", "order", "growth")):
+            pos_words = ("cloud", "deal", "rallies", "wins", "order", "growth")
+            if any(pos in lowered for pos in pos_words):
                 score = 0.45 if "ticker_substitution_attempt" not in flags else 0.35
             else:
                 score = 0.0
@@ -167,7 +171,15 @@ class MockStructuredClient:
             )
         elif any(
             pos in lowered
-            for pos in ("cloud", "ai transformation", "rallies", "beats", "credit growth", "mega", "steady")
+            for pos in (
+                "cloud",
+                "ai transformation",
+                "rallies",
+                "beats",
+                "credit growth",
+                "mega",
+                "steady",
+            )
         ):
             score = 0.78
             conflict = False

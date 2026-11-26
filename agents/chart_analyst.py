@@ -104,15 +104,15 @@ class ChartAnalystAgent:
         self._llm = llm_client
         self._audit = audit_logger
 
-    async def run(
+    def run(
         self,
         symbol: str,
         sentiment: SentimentReport,
     ) -> tuple[TechnicalIndicators, NSEQuote, TradeProposal]:
         """Fetch raw OHLCV + quote from NSE MCP, compute indicators, and propose trade."""
         t0 = time.perf_counter()
-        quote = await self._nse.get_quote(symbol)
-        bars = await self._nse.get_historical_ohlcv(symbol, days=35)
+        quote = self._nse.get_quote(symbol)
+        bars = self._nse.get_historical_ohlcv(symbol, days=35)
         indicators = compute_technical_indicators(symbol, quote, bars)
 
         user_prompt = (
