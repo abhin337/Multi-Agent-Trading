@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import BaseModel
 
@@ -46,6 +47,13 @@ class GeminiStructuredClient:
                 "GEMINI_API_KEY is required when USE_MOCK_LLM=false."
             )
         self._model = settings.gemini_model
+        self._fallback_models = [
+            m
+            for m in (self._model, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite")
+            if m
+        ]
+        # Preserve order while deduplicating
+        self._fallback_models = list(dict.fromkeys(self._fallback_models))
         self._client = genai.Client(api_key=api_key)
 
     def generate_structured(
@@ -56,16 +64,27 @@ class GeminiStructuredClient:
         response_schema: type[T],
         metadata: dict[str, Any] | None = None,
     ) -> T:
-        response = self._client.models.generate_content(
-            model=self._model,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json",
-                response_schema=response_schema,
-                temperature=0.1,
-            ),
-        )
+        last_err: Exception | None = None
+        response = None
+        for model_name in self._fallback_models:
+            try:
+                response = self._client.models.generate_content(
+                    model=model_name,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        response_mime_type="application/json",
+                        response_json_schema=response_schema.model_json_schema(),
+                        temperature=0.1,
+                    ),
+                )
+                break
+            except genai_errors.ServerError as exc:
+                last_err = exc
+                continue
+        if response is None:
+            assert last_err is not None
+            raise last_err
         if not response.text:
             raise RuntimeError(f"Gemini returned empty response for {agent_name}.")
         return response_schema.model_validate_json(response.text)

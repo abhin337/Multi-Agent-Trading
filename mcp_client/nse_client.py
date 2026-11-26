@@ -21,6 +21,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+import httpx2
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
@@ -209,20 +210,32 @@ class NSEClient:
     async def _call_http_tool_async(
         self, url: str, name: str, arguments: dict[str, Any]
     ) -> Any:
-        async with streamable_http_client(url, terminate_on_close=False) as (
-            read_stream,
-            write_stream,
-        ):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool(name, arguments)
-                return self._decode_tool_result(name, result)
+        timeout = httpx2.Timeout(25.0, connect=10.0)
+        async with httpx2.AsyncClient(timeout=timeout) as http_client:
+            async with streamable_http_client(
+                url, http_client=http_client, terminate_on_close=False
+            ) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool(name, arguments)
+                    return self._decode_tool_result(name, result)
 
     def _call_stdio_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         return asyncio.run(self._call_stdio_tool_async(name, arguments))
 
-    def _call_http_tool(self, url: str, name: str, arguments: dict[str, Any]) -> Any:
-        return asyncio.run(self._call_http_tool_async(url, name, arguments))
+    def _call_http_tool(
+        self, url: str, name: str, arguments: dict[str, Any], retries: int = 1
+    ) -> Any:
+        last_exc: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                return asyncio.run(self._call_http_tool_async(url, name, arguments))
+            except Exception as exc:
+                last_exc = exc
+                if attempt < retries:
+                    time.sleep(0.5 * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
 
     def lookup_live_symbol(self, query: str) -> list[str]:
         """Search NSE bhavcopy symbol catalog across 3,500+ listed equities."""
@@ -247,7 +260,7 @@ class NSEClient:
                     data = self._call_http_tool(
                         self.cm_market_url,
                         "cm_get_equity_stocks",
-                        {"limit": 500, "symbolFilter": ""},
+                        {"limit": 100, "symbolFilter": ""},
                     )
                     stocks = (data or {}).get("stocks", [])
                     self._live_symbol_cache = {

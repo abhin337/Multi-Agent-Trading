@@ -22,7 +22,7 @@ class AppSettings(BaseSettings):
     )
 
     gemini_api_key: SecretStr | None = Field(default=None, alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
+    gemini_model: str = Field(default="gemini-3.8-flash", alias="GEMINI_MODEL")
 
     dry_run: bool = Field(default=True, alias="DRY_RUN")
     use_mock_llm: bool = Field(default=True, alias="USE_MOCK_LLM")

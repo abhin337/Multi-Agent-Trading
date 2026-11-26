@@ -41,25 +41,30 @@ class ScannerAgent:
         """Validate candidate tickers against the NSE allowlist, fetch quotes, and rank."""
         t0 = time.perf_counter()
         requested = raw_candidates if raw_candidates is not None else list(_DEFAULT_WATCHLIST)
-        active_map = self._nse.list_active_symbols()
-        allowed_set: set[str] | None = (
-            set(active_map.keys()) if self._nse.mode == "nse_live" else None
-        )
+        allowed_set: set[str] | None = None
+        if self._nse.mode == "nse_live":
+            if raw_candidates is None:
+                active_map = self._nse.list_active_symbols()
+                allowed_set = set(active_map.keys())
+            else:
+                # Verify explicit candidates against nse-bhavcopy's 3,500+ symbol catalog
+                allowed_set = set()
+                for item in requested:
+                    pre = validate_ticker(item)
+                    if pre.error_code in {"EMPTY", "AMBIGUOUS", "DELISTED_MERGED"}:
+                        continue
+                    cleaned = item.strip().upper()
+                    if " " not in cleaned:
+                        matches = self._nse.lookup_live_symbol(cleaned)
+                        if cleaned in matches:
+                            allowed_set.add(cleaned)
+        else:
+            self._nse.list_active_symbols()
 
         valid_quotes: list[dict[str, object]] = []
         rejected_inputs: list[str] = []
 
         for item in requested:
-            if (
-                allowed_set is not None
-                and item.strip().upper() not in allowed_set
-                and " " not in item.strip()
-            ):
-                # Check nse-bhavcopy 3,500+ equity catalog when beyond top-500 stocks
-                matches = self._nse.lookup_live_symbol(item)
-                if item.strip().upper() in matches:
-                    allowed_set.add(item.strip().upper())
-
             check = validate_ticker(item, allowed_symbols=allowed_set)
             if not check.is_valid or check.canonical_symbol is None:
                 rejected_inputs.append(f"{item}: {check.reason}")
