@@ -34,6 +34,8 @@ class TradingOrchestrator:
         self.audit = audit_logger or AuditLogger(log_path=self.settings.audit_log_path)
         self.nse_client = nse_client or NSEClient(
             mode=self.settings.nse_mcp_mode,
+            cm_market_url=self.settings.nse_cm_market_mcp_url,
+            bhavcopy_url=self.settings.nse_bhavcopy_mcp_url,
             event_hook=self.audit.as_nse_event_hook(),
         )
         if nse_client is not None and nse_client._event_hook is None:
@@ -140,6 +142,11 @@ class TradingOrchestrator:
             )
 
         # Deterministic boundary validation before HITL gate or Zerodha execution
+        allowed_set: set[str] | None = (
+            {c.symbol.upper() for c in scan_result.candidates}
+            if self.nse_client.mode == "nse_live" and scan_result.candidates
+            else None
+        )
         try:
             validated_order = BoundaryValidator.validate_proposal(
                 trace_id=self.audit.trace_id,
@@ -150,6 +157,7 @@ class TradingOrchestrator:
                 live_quote=live_quote,
                 settings=self.settings,
                 caller_role=BoundaryValidator.ALLOWED_EXECUTION_CALLER,
+                allowed_symbols=allowed_set,
             )
         except GuardrailViolation as violation:
             self.audit.record_handoff(

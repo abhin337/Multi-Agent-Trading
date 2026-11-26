@@ -26,8 +26,16 @@ class AppSettings(BaseSettings):
 
     dry_run: bool = Field(default=True, alias="DRY_RUN")
     use_mock_llm: bool = Field(default=True, alias="USE_MOCK_LLM")
-    nse_mcp_mode: Literal["fixture", "stdio"] = Field(
+    nse_mcp_mode: Literal["fixture", "stdio", "nse_live"] = Field(
         default="fixture", alias="NSE_MCP_MODE"
+    )
+    nse_cm_market_mcp_url: str = Field(
+        default="https://mcp.nseindia.in/cmmkt/mcp",
+        alias="NSE_CM_MARKET_MCP_URL",
+    )
+    nse_bhavcopy_mcp_url: str = Field(
+        default="https://mcp.nseindia.in/bhavcopy/cm/mcp",
+        alias="NSE_BHAVCOPY_MCP_URL",
     )
 
     # Deterministic risk & guardrail caps

@@ -41,13 +41,26 @@ class ScannerAgent:
         """Validate candidate tickers against the NSE allowlist, fetch quotes, and rank."""
         t0 = time.perf_counter()
         requested = raw_candidates if raw_candidates is not None else list(_DEFAULT_WATCHLIST)
-        self._nse.list_active_symbols()
+        active_map = self._nse.list_active_symbols()
+        allowed_set: set[str] | None = (
+            set(active_map.keys()) if self._nse.mode == "nse_live" else None
+        )
 
         valid_quotes: list[dict[str, object]] = []
         rejected_inputs: list[str] = []
 
         for item in requested:
-            check = validate_ticker(item)
+            if (
+                allowed_set is not None
+                and item.strip().upper() not in allowed_set
+                and " " not in item.strip()
+            ):
+                # Check nse-bhavcopy 3,500+ equity catalog when beyond top-500 stocks
+                matches = self._nse.lookup_live_symbol(item)
+                if item.strip().upper() in matches:
+                    allowed_set.add(item.strip().upper())
+
+            check = validate_ticker(item, allowed_symbols=allowed_set)
             if not check.is_valid or check.canonical_symbol is None:
                 rejected_inputs.append(f"{item}: {check.reason}")
                 self._audit.log_event(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Iterable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,7 +33,10 @@ class TickerValidationResult(BaseModel):
     candidates: list[str] = Field(default_factory=list)
 
 
-def validate_ticker(raw_input: str) -> TickerValidationResult:
+def validate_ticker(
+    raw_input: str,
+    allowed_symbols: Iterable[str] | None = None,
+) -> TickerValidationResult:
     """Validate an input symbol or alias against the canonical active NSE allowlist."""
     cleaned = re.sub(r"\s+", " ", raw_input.strip()).upper()
     if not cleaned:
@@ -65,13 +68,19 @@ def validate_ticker(raw_input: str) -> TickerValidationResult:
             reason=f"Stale/merged ticker '{cleaned}': {MERGED_OR_DELISTED_SYMBOLS[cleaned]}.",
         )
 
-    if cleaned in ACTIVE_NSE_SYMBOLS:
+    active_set = (
+        {s.strip().upper() for s in allowed_symbols}
+        if allowed_symbols is not None
+        else set(ACTIVE_NSE_SYMBOLS.keys())
+    )
+    if cleaned in active_set:
+        label = ACTIVE_NSE_SYMBOLS.get(cleaned, f"Verified NSE Equity ({cleaned})")
         return TickerValidationResult(
             raw_input=raw_input,
             is_valid=True,
             canonical_symbol=cleaned,
             error_code="OK",
-            reason=f"Active NSE symbol ({ACTIVE_NSE_SYMBOLS[cleaned]}).",
+            reason=f"Active NSE symbol ({label}).",
         )
 
     return TickerValidationResult(

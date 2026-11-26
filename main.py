@@ -27,7 +27,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stdio-mcp",
         action="store_true",
-        help="Connect to mcp_server/nse_server.py over real MCP stdio transport.",
+        help="Connect to local mcp_server/nse_server.py over MCP stdio transport.",
+    )
+    parser.add_argument(
+        "--live-nse",
+        action="store_true",
+        help="Connect to live NSE India MCP servers (cm-market + nse-bhavcopy).",
     )
     return parser.parse_args()
 
@@ -35,7 +40,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     settings = get_settings()
-    if args.stdio_mcp:
+    if args.live_nse:
+        settings.nse_mcp_mode = "nse_live"
+    elif args.stdio_mcp:
         settings.nse_mcp_mode = "stdio"
 
     orchestrator = TradingOrchestrator(settings=settings)

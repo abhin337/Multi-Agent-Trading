@@ -78,11 +78,11 @@ git clone https://github.com/abhin337/Multi-Agent-Trading.git && cd Multi-Agent-
 # 2. Configure environment (defaults to DRY_RUN=true and local replay fixtures)
 cp .env.example .env
 
-# 3. Run the multi-agent pipeline in safe dry-run mode
+# 3. Run the multi-agent pipeline in safe dry-run mode (or pass --live-nse for official NSE MCP)
 uv run python main.py --auto-approve
 ```
 
-> **Note:** To execute against live NSE MCP feeds or Zerodha paper/live endpoints, populate `GEMINI_API_KEY`, `KITE_API_KEY`, and `KITE_ACCESS_TOKEN` in `.env` and toggle `DRY_RUN=false`. Never commit `.env` files.
+> **Note:** To fetch live NSE data via `cm-market` (`https://mcp.nseindia.in/cmmkt/mcp`) and 5-year EOD history via `nse-bhavcopy` (`https://mcp.nseindia.in/bhavcopy/cm/mcp`), pass `--live-nse` (or set `NSE_MCP_MODE=nse_live`). Populate `GEMINI_API_KEY`, `KITE_API_KEY`, and `KITE_ACCESS_TOKEN` in `.env` and toggle `DRY_RUN=false` only when intentionally testing live execution. Never commit `.env` files.
 
 ---
 

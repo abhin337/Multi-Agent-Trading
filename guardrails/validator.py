@@ -51,6 +51,7 @@ class BoundaryValidator:
         live_quote: NSEQuote,
         settings: AppSettings,
         caller_role: str = ALLOWED_EXECUTION_CALLER,
+        allowed_symbols: set[str] | None = None,
     ) -> OrderRequest:
         """Validate a TradeProposal deterministically and return an OrderRequest."""
         cls.assert_caller_authorized(caller_role)
@@ -60,7 +61,7 @@ class BoundaryValidator:
             reasons.append("no_trade_proposal: proposal action is NO_TRADE.")
 
         # 1. Canonical NSE ticker allowlist check
-        ticker_check = validate_ticker(proposal.symbol)
+        ticker_check = validate_ticker(proposal.symbol, allowed_symbols=allowed_symbols)
         if not ticker_check.is_valid or ticker_check.canonical_symbol is None:
             reasons.append(f"ticker_allowlist_rejected: {ticker_check.reason}")
             canonical_symbol = proposal.symbol.strip().upper()
