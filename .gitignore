@@ -14,8 +14,11 @@ __pycache__/
 dist/
 build/
 
-# Logs & generated eval artifacts
+# Logs, local state DB, & generated eval artifacts
 logs/
+data/
+*.db
+*.sqlite*
 *.jsonl
 
 # OS / IDE

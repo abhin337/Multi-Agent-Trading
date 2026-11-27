@@ -102,6 +102,42 @@ class SentimentReport(BaseModel):
     summary: str
 
 
+class CorporateActionEvent(BaseModel):
+    """Normalized NSE corporate action event (split, bonus, dividend)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    action_type: Literal["SPLIT", "BONUS", "DIVIDEND", "OTHER"]
+    ex_date: str
+    subject: str
+    adjustment_factor: float = Field(default=1.0, gt=0)
+
+
+class MarketMood(BaseModel):
+    """Broad NSE market regime snapshot (India VIX + advance/decline breadth)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    date: str
+    india_vix: float = Field(ge=0.0)
+    advances: int = Field(ge=0)
+    declines: int = Field(ge=0)
+    ad_ratio: float = Field(ge=0.0)
+    regime: Literal["BULLISH", "NEUTRAL", "HIGH_VIX_RISK_OFF"]
+
+
+class PortfolioSnapshot(BaseModel):
+    """Isolated execution-layer view of active positions and available equity margin."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    open_positions_count: int = Field(ge=0)
+    open_symbols: list[str] = Field(default_factory=list)
+    available_margin_inr: float = Field(ge=0.0)
+    source: Literal["simulated_sqlite", "kite_live"]
+
+
 class TechnicalIndicators(BaseModel):
     """Deterministically computed indicators from raw OHLCV data."""
 
@@ -116,6 +152,7 @@ class TechnicalIndicators(BaseModel):
     resistance: float = Field(gt=0)
     volume_ratio: float = Field(ge=0.0)
     bullish_breakout: bool
+    market_regime: Literal["BULLISH", "NEUTRAL", "HIGH_VIX_RISK_OFF"] = "NEUTRAL"
 
 
 class TradeProposal(BaseModel):
@@ -233,6 +270,8 @@ class OrchestrationOutcome(BaseModel):
     scan_result: ScanResult | None = None
     sentiment_report: SentimentReport | None = None
     technical_indicators: TechnicalIndicators | None = None
+    market_mood: MarketMood | None = None
+    corporate_actions_applied: list[CorporateActionEvent] = Field(default_factory=list)
     proposal: TradeProposal | None = None
     validated_order: OrderRequest | None = None
     receipt: OrderReceipt | None = None

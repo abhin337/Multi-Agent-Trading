@@ -5,7 +5,9 @@ description = "Least-privilege 3-agent NSE trading pipeline with Gemini API, rea
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.165.0",
     "google-genai>=3.6.1",
+    "keyring>=25.7.0",
     "kiteconnect>=5.2.2",
     "mcp>=2.3.0",
     "pydantic>=2.14.4",

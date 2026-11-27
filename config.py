@@ -46,6 +46,16 @@ class AppSettings(BaseSettings):
     max_price_deviation_pct: float = 5.0
     max_stop_loss_pct: float = 10.0
 
+    # Market regime, live news, and portfolio/state settings
+    enable_live_news_rss: bool = Field(default=False, alias="ENABLE_LIVE_NEWS_RSS")
+    high_vix_threshold: float = 22.0
+    min_ad_ratio_for_breakout: float = 0.65
+    simulated_available_margin_inr: float = 500_000.0
+    state_db_path: str = Field(default="data/trading_state.db", alias="STATE_DB_PATH")
+    inter_service_secret: SecretStr | None = Field(
+        default=None, alias="INTER_SERVICE_SECRET"
+    )
+
     # Observability
     audit_log_path: str = "logs/audit.jsonl"
     eval_log_path: str = "logs/eval_audit.jsonl"

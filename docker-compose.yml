@@ -1,0 +1,29 @@
+services:
+  agent-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    ports:
+      - "8001:8001"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash}
+      - USE_MOCK_LLM=${USE_MOCK_LLM:-true}
+      - NSE_MCP_MODE=${NSE_MCP_MODE:-nse_live}
+      - ENABLE_LIVE_NEWS_RSS=${ENABLE_LIVE_NEWS_RSS:-false}
+    # Notice: KITE_API_KEY and KITE_ACCESS_TOKEN are intentionally NOT passed here.
+
+  execution-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.execution
+    ports:
+      - "8002:8002"
+    environment:
+      - DRY_RUN=${DRY_RUN:-true}
+      - KITE_API_KEY=${KITE_API_KEY:-}
+      - KITE_ACCESS_TOKEN=${KITE_ACCESS_TOKEN:-}
+      - INTER_SERVICE_SECRET=${INTER_SERVICE_SECRET:-}
+      - STATE_DB_PATH=/app/data/trading_state.db
+    volumes:
+      - ./data:/app/data

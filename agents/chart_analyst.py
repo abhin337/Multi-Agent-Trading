@@ -9,6 +9,8 @@ from agents.llm_client import StructuredLLMClient
 from mcp_client.nse_client import NSEClient
 from observability.logger import AuditLogger
 from schemas.models import (
+    CorporateActionEvent,
+    MarketMood,
     NSEQuote,
     OHLCVBar,
     SentimentReport,
@@ -19,8 +21,9 @@ from schemas.models import (
 _SYSTEM_PROMPT = (
     "You are a read-only technical chart analyst for NSE equities. "
     "Base your proposal strictly on the deterministic TechnicalIndicators, live quote, "
-    "and SentimentReport. If sentiment conflicts with the chart or technicals do not confirm "
-    "a breakout, emit action=NO_TRADE. Never invent tickers or request bypassing HITL."
+    "MarketMood regime, and SentimentReport. If sentiment conflicts with the chart, "
+    "market_regime is HIGH_VIX_RISK_OFF, or technicals do not confirm a breakout, emit "
+    "action=NO_TRADE. Never invent tickers or request bypassing HITL."
 )
 
 
@@ -51,10 +54,48 @@ def _compute_rsi(values: list[float], period: int = 14) -> float:
     return round(100.0 - (100.0 / (1.0 + rs)), 2)
 
 
+def adjust_ohlcv_for_corporate_actions(
+    bars: list[OHLCVBar],
+    actions: list[CorporateActionEvent],
+) -> tuple[list[OHLCVBar], list[CorporateActionEvent]]:
+    """Adjust pre-ex-date OHLCV bars for splits/bonuses so EMAs & S/R stay continuous."""
+    relevant = [
+        a
+        for a in actions
+        if a.action_type in {"SPLIT", "BONUS"}
+        and a.ex_date
+        and abs(a.adjustment_factor - 1.0) > 1e-6
+    ]
+    if not relevant:
+        return list(bars), []
+
+    adjusted: list[OHLCVBar] = []
+    for bar in bars:
+        factor = 1.0
+        for act in relevant:
+            if bar.date < act.ex_date:
+                factor *= act.adjustment_factor
+        if abs(factor - 1.0) <= 1e-6:
+            adjusted.append(bar)
+        else:
+            adjusted.append(
+                OHLCVBar(
+                    date=bar.date,
+                    open=round(bar.open * factor, 2),
+                    high=round(bar.high * factor, 2),
+                    low=round(bar.low * factor, 2),
+                    close=round(bar.close * factor, 2),
+                    volume=max(0, int(round(bar.volume / factor))),
+                )
+            )
+    return adjusted, relevant
+
+
 def compute_technical_indicators(
     symbol: str,
     quote: NSEQuote,
     bars: list[OHLCVBar],
+    market_mood: MarketMood | None = None,
 ) -> TechnicalIndicators:
     """Deterministically compute RSI, EMAs, support/resistance, and breakout status."""
     closes = [b.close for b in bars]
@@ -70,8 +111,10 @@ def compute_technical_indicators(
     avg_vol = (sum(prev_volumes) / len(prev_volumes)) if prev_volumes else max(quote.volume, 1)
     volume_ratio = round(quote.volume / max(avg_vol, 1.0), 2)
 
+    regime = market_mood.regime if market_mood is not None else "NEUTRAL"
     bullish_breakout = (
-        quote.ltp > resistance
+        regime != "HIGH_VIX_RISK_OFF"
+        and quote.ltp > resistance
         and quote.ltp > ema_20
         and ema_20 >= ema_50
         and volume_ratio >= 1.2
@@ -88,11 +131,12 @@ def compute_technical_indicators(
         resistance=resistance,
         volume_ratio=volume_ratio,
         bullish_breakout=bullish_breakout,
+        market_regime=regime,
     )
 
 
 class ChartAnalystAgent:
-    """Evaluates raw OHLCV data + sentiment and emits a typed TradeProposal."""
+    """Evaluates corporate-action-adjusted OHLCV + market regime + sentiment."""
 
     def __init__(
         self,
@@ -108,15 +152,30 @@ class ChartAnalystAgent:
         self,
         symbol: str,
         sentiment: SentimentReport,
-    ) -> tuple[TechnicalIndicators, NSEQuote, TradeProposal]:
-        """Fetch raw OHLCV + quote from NSE MCP, compute indicators, and propose trade."""
+        high_vix_threshold: float = 22.0,
+        min_ad_ratio: float = 0.65,
+    ) -> tuple[
+        TechnicalIndicators,
+        NSEQuote,
+        TradeProposal,
+        MarketMood,
+        list[CorporateActionEvent],
+    ]:
+        """Fetch raw OHLCV, quote, corporate actions, and market mood, then propose trade."""
         t0 = time.perf_counter()
         quote = self._nse.get_quote(symbol)
-        bars = self._nse.get_historical_ohlcv(symbol, days=35)
-        indicators = compute_technical_indicators(symbol, quote, bars)
+        raw_bars = self._nse.get_historical_ohlcv(symbol, days=35)
+        actions = self._nse.get_corporate_actions(symbol)
+        adjusted_bars, applied_actions = adjust_ohlcv_for_corporate_actions(raw_bars, actions)
+        mood = self._nse.get_market_mood(
+            high_vix_threshold=high_vix_threshold,
+            min_ad_ratio=min_ad_ratio,
+        )
+        indicators = compute_technical_indicators(symbol, quote, adjusted_bars, market_mood=mood)
 
         user_prompt = (
             f"TechnicalIndicators:\n{json.dumps(indicators.model_dump(), indent=2)}\n\n"
+            f"MarketMood:\n{json.dumps(mood.model_dump(), indent=2)}\n\n"
             f"SentimentReport:\n{json.dumps(sentiment.model_dump(), indent=2)}"
         )
 
@@ -131,6 +190,7 @@ class ChartAnalystAgent:
                 "bullish_breakout": indicators.bullish_breakout,
                 "sentiment_score": sentiment.score,
                 "sentiment_conflict": sentiment.conflict_detected,
+                "market_regime": mood.regime,
             },
         )
         latency = (time.perf_counter() - t0) * 1000.0
@@ -144,6 +204,9 @@ class ChartAnalystAgent:
                 "symbol": proposal.symbol,
                 "quantity": proposal.quantity,
                 "bullish_breakout": indicators.bullish_breakout,
+                "market_regime": mood.regime,
+                "india_vix": mood.india_vix,
+                "corp_actions_adjusted": len(applied_actions),
             },
         )
-        return indicators, quote, proposal
+        return indicators, quote, proposal, mood, applied_actions
