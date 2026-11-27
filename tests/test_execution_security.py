@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from execution.kite_auth import load_kite_credentials
 from execution.zerodha_executor import (
     HITLBypassError,
     HITLGate,
     ZerodhaExecutor,
-    _load_kite_credentials,
 )
 from observability.logger import AuditLogger
 from schemas.models import OrderRequest
@@ -90,7 +90,7 @@ def test_load_kite_credentials_reads_dotenv_without_polluting_os_environ(
         "KITE_API_KEY=dotenv_key_123\nKITE_ACCESS_TOKEN=dotenv_tok_456\n",
         encoding="utf-8",
     )
-    creds = _load_kite_credentials(env_file=env_file)
+    creds = load_kite_credentials(env_file=env_file, use_keyring=False)
     assert creds is not None
     assert creds.api_key.get_secret_value() == "dotenv_key_123"
     assert creds.access_token.get_secret_value() == "dotenv_tok_456"

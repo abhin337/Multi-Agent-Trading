@@ -10,7 +10,8 @@ from agents.llm_client import MockAgentOverrides, StructuredLLMClient, build_llm
 from agents.scanner import ScannerAgent
 from agents.sentiment import SentimentAgent
 from config import AppSettings, get_settings
-from execution.zerodha_executor import HITLGate, ZerodhaExecutor
+from execution.state_store import IdempotencyConflictError, SQLiteStateStore
+from execution.zerodha_executor import HITLGate, PortfolioConstraintError, ZerodhaExecutor
 from guardrails.validator import BoundaryValidator, GuardrailViolation
 from mcp_client.nse_client import NSEClient, NSEMCPError
 from observability.logger import AuditLogger
@@ -27,15 +28,18 @@ class TradingOrchestrator:
         llm_client: StructuredLLMClient | None = None,
         hitl_gate: HITLGate | None = None,
         executor: ZerodhaExecutor | None = None,
+        state_store: SQLiteStateStore | None = None,
         audit_logger: AuditLogger | None = None,
         llm_overrides: MockAgentOverrides | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.audit = audit_logger or AuditLogger(log_path=self.settings.audit_log_path)
+        self.state_store = state_store or SQLiteStateStore(db_path=self.settings.state_db_path)
         self.nse_client = nse_client or NSEClient(
             mode=self.settings.nse_mcp_mode,
             cm_market_url=self.settings.nse_cm_market_mcp_url,
             bhavcopy_url=self.settings.nse_bhavcopy_mcp_url,
+            enable_live_news_rss=self.settings.enable_live_news_rss,
             event_hook=self.audit.as_nse_event_hook(),
         )
         if nse_client is not None and nse_client._event_hook is None:
@@ -46,6 +50,9 @@ class TradingOrchestrator:
         self.executor = executor or ZerodhaExecutor(
             hitl_gate=self.hitl_gate,
             dry_run=self.settings.dry_run,
+            state_store=self.state_store,
+            max_concurrent_trades=self.settings.max_concurrent_trades,
+            simulated_available_margin_inr=self.settings.simulated_available_margin_inr,
         )
 
         self.scanner = ScannerAgent(self.nse_client, self.llm_client, self.settings, self.audit)
@@ -99,8 +106,17 @@ class TradingOrchestrator:
 
         try:
             sentiment_report = self.sentiment.run(target_symbol)
-            indicators, live_quote, proposal = self.chart_analyst.run(
-                target_symbol, sentiment_report
+            (
+                indicators,
+                live_quote,
+                proposal,
+                market_mood,
+                applied_actions,
+            ) = self.chart_analyst.run(
+                target_symbol,
+                sentiment_report,
+                high_vix_threshold=self.settings.high_vix_threshold,
+                min_ad_ratio=self.settings.min_ad_ratio_for_breakout,
             )
         except NSEMCPError as exc:
             self.audit.log_event(
@@ -135,6 +151,8 @@ class TradingOrchestrator:
                 scan_result=scan_result,
                 sentiment_report=sentiment_report,
                 technical_indicators=indicators,
+                market_mood=market_mood,
+                corporate_actions_applied=applied_actions,
                 proposal=proposal,
                 handoffs=list(self.audit.handoffs),
                 injection_detected=injection_detected,
@@ -159,19 +177,21 @@ class TradingOrchestrator:
                 caller_role=BoundaryValidator.ALLOWED_EXECUTION_CALLER,
                 allowed_symbols=allowed_set,
             )
-        except GuardrailViolation as violation:
+            self.executor.check_portfolio_and_idempotency(validated_order)
+        except (GuardrailViolation, IdempotencyConflictError, PortfolioConstraintError) as err:
+            reasons = err.reasons if isinstance(err, GuardrailViolation) else [str(err)]
             self.audit.record_handoff(
                 agent="BoundaryValidator",
                 tool_or_action="block_proposal",
                 status="blocked",
-                payload={"reasons": violation.reasons},
+                payload={"reasons": reasons},
             )
             self.audit.log_event(
                 event_type="guardrail_rejection",
                 component="guardrails.validator",
                 status="blocked",
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
-                payload={"symbol": proposal.symbol, "reasons": violation.reasons},
+                payload={"symbol": proposal.symbol, "reasons": reasons},
             )
             return OrchestrationOutcome(
                 trace_id=self.audit.trace_id,
@@ -179,12 +199,14 @@ class TradingOrchestrator:
                 scan_result=scan_result,
                 sentiment_report=sentiment_report,
                 technical_indicators=indicators,
+                market_mood=market_mood,
+                corporate_actions_applied=applied_actions,
                 proposal=proposal,
                 handoffs=list(self.audit.handoffs),
-                guardrail_reasons=violation.reasons,
+                guardrail_reasons=reasons,
                 injection_detected=injection_detected,
                 hallucination_blocked=hallucination_blocked
-                or any("ticker_allowlist_rejected" in r for r in violation.reasons),
+                or any("ticker_allowlist_rejected" in r for r in reasons),
             )
 
         self.audit.record_handoff(
@@ -200,6 +222,7 @@ class TradingOrchestrator:
             input_fn=hitl_input_fn,
             echo_fn=hitl_echo_fn,
         )
+        self.state_store.record_hitl_decision(self.audit.trace_id, validated_order.symbol, decision)
         self.audit.record_handoff(
             agent="HITLGate",
             tool_or_action="approve" if decision.approved else "reject",
@@ -214,6 +237,8 @@ class TradingOrchestrator:
                 scan_result=scan_result,
                 sentiment_report=sentiment_report,
                 technical_indicators=indicators,
+                market_mood=market_mood,
+                corporate_actions_applied=applied_actions,
                 proposal=proposal,
                 validated_order=validated_order,
                 handoffs=list(self.audit.handoffs),
@@ -236,6 +261,8 @@ class TradingOrchestrator:
             scan_result=scan_result,
             sentiment_report=sentiment_report,
             technical_indicators=indicators,
+            market_mood=market_mood,
+            corporate_actions_applied=applied_actions,
             proposal=proposal,
             validated_order=validated_order,
             receipt=receipt,

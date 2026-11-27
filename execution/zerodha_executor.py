@@ -1,10 +1,11 @@
 """Isolated write-only Zerodha execution boundary with synchronous HITL gating.
 
 Security invariants:
-1. KITE_API_KEY and KITE_ACCESS_TOKEN are loaded ONLY inside this module.
+1. KITE_API_KEY and KITE_ACCESS_TOKEN are loaded ONLY inside execution/.
 2. Credentials are stored in pydantic.SecretStr, never serialized to logs or prompts.
 3. Every order requires an ephemeral HMAC-signed HITLApprovalToken issued only after
    synchronous human confirmation.
+4. Supports portfolio concurrency/margin checks and SQLite order idempotency.
 """
 
 from __future__ import annotations
@@ -14,44 +15,26 @@ import hmac
 import os
 import time
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import date, datetime, timezone
 from typing import Callable
 
-from dotenv import dotenv_values
-from pydantic import SecretStr
-
-from schemas.models import HITLApprovalToken, HITLDecision, OrderReceipt, OrderRequest
+from execution.kite_auth import load_kite_credentials
+from execution.state_store import SQLiteStateStore
+from schemas.models import (
+    HITLApprovalToken,
+    HITLDecision,
+    OrderReceipt,
+    OrderRequest,
+    PortfolioSnapshot,
+)
 
 
 class HITLBypassError(PermissionError):
     """Raised when order execution is attempted without a valid signed HITL token."""
 
 
-@dataclass(frozen=True)
-class _KiteCredentials:
-    api_key: SecretStr
-    access_token: SecretStr
-
-    def __repr__(self) -> str:
-        return "_KiteCredentials(api_key='[REDACTED]', access_token='[REDACTED]')"
-
-
-def _load_kite_credentials(env_file: str | Path = ".env") -> _KiteCredentials | None:
-    """Load brokerage credentials exclusively inside execution layer (env first, then .env)."""
-    api_key = os.getenv("KITE_API_KEY", "").strip()
-    access_token = os.getenv("KITE_ACCESS_TOKEN", "").strip()
-    if (not api_key or not access_token) and Path(env_file).is_file():
-        file_vars = dotenv_values(env_file)
-        api_key = api_key or (file_vars.get("KITE_API_KEY") or "").strip()
-        access_token = access_token or (file_vars.get("KITE_ACCESS_TOKEN") or "").strip()
-    if not api_key or not access_token:
-        return None
-    return _KiteCredentials(
-        api_key=SecretStr(api_key),
-        access_token=SecretStr(access_token),
-    )
+class PortfolioConstraintError(RuntimeError):
+    """Raised when portfolio concurrency or available equity margin blocks an order."""
 
 
 def compute_order_hash(order: OrderRequest) -> str:
@@ -134,10 +117,20 @@ class HITLGate:
 class ZerodhaExecutor:
     """Write-only brokerage wrapper isolated from agents, prompts, and MCP tools."""
 
-    def __init__(self, hitl_gate: HITLGate, dry_run: bool = True) -> None:
+    def __init__(
+        self,
+        hitl_gate: HITLGate,
+        dry_run: bool = True,
+        state_store: SQLiteStateStore | None = None,
+        max_concurrent_trades: int = 1,
+        simulated_available_margin_inr: float = 500_000.0,
+    ) -> None:
         self._hitl_gate = hitl_gate
         self._dry_run = dry_run
-        self._credentials = _load_kite_credentials()
+        self._credentials = load_kite_credentials()
+        self._state_store = state_store
+        self._max_concurrent_trades = max_concurrent_trades
+        self._simulated_margin = simulated_available_margin_inr
 
     def __repr__(self) -> str:
         return f"ZerodhaExecutor(dry_run={self._dry_run}, credentials='[REDACTED]')"
@@ -154,17 +147,91 @@ class ZerodhaExecutor:
                 scrubbed = scrubbed.replace(secret, "[REDACTED]")
         return scrubbed
 
+    def get_portfolio_snapshot(self, trading_date: str | None = None) -> PortfolioSnapshot:
+        """Read current active positions and available equity margin inside execution boundary."""
+        if self._dry_run:
+            open_syms = (
+                self._state_store.list_open_symbols(trading_date=trading_date)
+                if self._state_store is not None
+                else []
+            )
+            return PortfolioSnapshot(
+                open_positions_count=len(open_syms),
+                open_symbols=open_syms,
+                available_margin_inr=self._simulated_margin,
+                source="simulated_sqlite",
+            )
+
+        if self._credentials is None:
+            raise RuntimeError(
+                "Live brokerage mode (DRY_RUN=false) requires KITE_API_KEY and KITE_ACCESS_TOKEN."
+            )
+        try:
+            from kiteconnect import KiteConnect
+
+            kite = KiteConnect(api_key=self._credentials.api_key.get_secret_value())
+            kite.set_access_token(self._credentials.access_token.get_secret_value())
+            positions = kite.positions().get("net", [])
+            open_syms = [
+                str(p.get("tradingsymbol", "")).upper()
+                for p in positions
+                if int(p.get("quantity", 0)) != 0
+            ]
+            margins = kite.margins("equity")
+            avail = float(margins.get("available", {}).get("live_balance", 0.0))
+            return PortfolioSnapshot(
+                open_positions_count=len(open_syms),
+                open_symbols=open_syms,
+                available_margin_inr=max(0.0, avail),
+                source="kite_live",
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                self._scrub_secrets(f"Zerodha portfolio/margin check failed: {exc}")
+            ) from None
+
+    def check_portfolio_and_idempotency(
+        self, order: OrderRequest, trading_date: str | None = None
+    ) -> PortfolioSnapshot:
+        """Verify daily idempotency, max concurrent positions, and available margin."""
+        day = trading_date or date.today().isoformat()
+        if self._state_store is not None:
+            key = self._state_store.build_idempotency_key(order, trading_date=day)
+            if self._state_store.has_executed_order(key):
+                from execution.state_store import IdempotencyConflictError
+
+                raise IdempotencyConflictError(
+                    f"Duplicate order blocked by idempotency key '{key}'."
+                )
+
+        snapshot = self.get_portfolio_snapshot(trading_date=day)
+        if order.transaction_type == "BUY":
+            if snapshot.open_positions_count >= self._max_concurrent_trades:
+                raise PortfolioConstraintError(
+                    f"portfolio_concurrency_limit_reached: {snapshot.open_positions_count} >= "
+                    f"{self._max_concurrent_trades} ({snapshot.open_symbols})."
+                )
+            required_inr = order.quantity * order.price
+            if required_inr > snapshot.available_margin_inr:
+                raise PortfolioConstraintError(
+                    f"insufficient_equity_margin: required INR {required_inr:,.2f} > "
+                    f"available INR {snapshot.available_margin_inr:,.2f}."
+                )
+        return snapshot
+
     def place_order(
         self,
         order: OrderRequest,
         approval_token: HITLApprovalToken | None,
+        trading_date: str | None = None,
     ) -> OrderReceipt:
         """Execute a validated order ONLY after verifying a signed HITL approval token."""
         self._hitl_gate.verify_token(order, approval_token)
+        self.check_portfolio_and_idempotency(order, trading_date=trading_date)
         now_iso = datetime.now(timezone.utc).isoformat()
 
         if self._dry_run:
-            return OrderReceipt(
+            receipt = OrderReceipt(
                 trace_id=order.trace_id,
                 order_id=f"DRY-{uuid.uuid4().hex[:10].upper()}",
                 status="DRY_RUN_EXECUTED",
@@ -175,6 +242,9 @@ class ZerodhaExecutor:
                 dry_run=True,
                 timestamp=now_iso,
             )
+            if self._state_store is not None:
+                self._state_store.record_order(order, receipt, trading_date=trading_date)
+            return receipt
 
         if self._credentials is None:
             raise RuntimeError(
@@ -214,7 +284,7 @@ class ZerodhaExecutor:
                 price=order.price if order.order_type == "LIMIT" else None,
                 tag=order.order_tag,
             )
-            return OrderReceipt(
+            receipt = OrderReceipt(
                 trace_id=order.trace_id,
                 order_id=str(kite_order_id),
                 status="LIVE_SUBMITTED",
@@ -225,5 +295,8 @@ class ZerodhaExecutor:
                 dry_run=False,
                 timestamp=now_iso,
             )
+            if self._state_store is not None:
+                self._state_store.record_order(order, receipt, trading_date=trading_date)
+            return receipt
         except Exception as exc:
             raise RuntimeError(self._scrub_secrets(f"Zerodha order failed: {exc}")) from None

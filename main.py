@@ -1,4 +1,4 @@
-"""CLI entrypoint for running the NSE multi-agent trading pipeline."""
+"""CLI entrypoint for running the NSE multi-agent trading pipeline or Kite login."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import json
 
 from config import get_settings
+from execution.kite_auth import run_kite_login_cli
 from orchestrator import TradingOrchestrator
 
 
@@ -34,16 +35,38 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Connect to live NSE India MCP servers (cm-market + nse-bhavcopy).",
     )
+    parser.add_argument(
+        "--live-news",
+        action="store_true",
+        help="Fetch untrusted public RSS news headlines in nse_live mode (sanitized pre-LLM).",
+    )
+    parser.add_argument(
+        "--kite-login",
+        action="store_true",
+        help="Run interactive daily Zerodha Kite login to store KITE_ACCESS_TOKEN safely.",
+    )
+    parser.add_argument(
+        "--kite-store",
+        choices=["keyring", "dotenv"],
+        default="keyring",
+        help="Where --kite-login stores KITE_API_KEY and KITE_ACCESS_TOKEN.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+    if args.kite_login:
+        run_kite_login_cli(target=args.kite_store)
+        return
+
     settings = get_settings()
     if args.live_nse:
         settings.nse_mcp_mode = "nse_live"
     elif args.stdio_mcp:
         settings.nse_mcp_mode = "stdio"
+    if args.live_news:
+        settings.enable_live_news_rss = True
 
     orchestrator = TradingOrchestrator(settings=settings)
     input_fn = (lambda _prompt: "Approve") if args.auto_approve else input

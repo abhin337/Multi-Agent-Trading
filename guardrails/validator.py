@@ -138,8 +138,12 @@ class BoundaryValidator:
                             f"{settings.max_stop_loss_pct}%."
                         )
 
-        # 5. Deterministic technical & sentiment alignment (guards against handoff drift)
+        # 5. Deterministic technical, market-regime & sentiment alignment
         if proposal.action == TradeAction.BUY:
+            if indicators.market_regime == "HIGH_VIX_RISK_OFF":
+                reasons.append(
+                    "market_regime_risk_off: HIGH_VIX_RISK_OFF regime forbids BUY breakouts."
+                )
             if not indicators.bullish_breakout:
                 reasons.append(
                     "technical_validation_failed: raw OHLCV indicators do not confirm "

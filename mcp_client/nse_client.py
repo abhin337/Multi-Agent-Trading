@@ -5,7 +5,8 @@ Supports:
 - 'stdio' mode: connects over MCP stdio transport to local mcp_server/nse_server.py.
 - 'nse_live' mode: connects over Streamable HTTP to official NSE India MCP servers:
   * cm-market (https://mcp.nseindia.in/cmmkt/mcp) for near real-time quotes & equity lists.
-  * nse-bhavcopy (https://mcp.nseindia.in/bhavcopy/cm/mcp) for 5-year EOD OHLCV & lookup.
+  * nse-bhavcopy (https://mcp.nseindia.in/bhavcopy/cm/mcp) for 5-year EOD OHLCV,
+    corporate actions, market mood (India VIX + breadth), and symbol lookup.
 
 Zero Zerodha credentials or write-enabled brokerage methods exist in this module.
 """
@@ -17,9 +18,11 @@ import json
 import os
 import sys
 import time
+import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Literal
+from urllib.parse import quote_plus
 
 import httpx2
 from mcp import ClientSession, StdioServerParameters
@@ -32,7 +35,13 @@ from mcp_server.fixtures import (
     FIXTURE_OHLCV,
     FIXTURE_QUOTES,
 )
-from schemas.models import MarketNewsItem, NSEQuote, OHLCVBar
+from schemas.models import (
+    CorporateActionEvent,
+    MarketMood,
+    MarketNewsItem,
+    NSEQuote,
+    OHLCVBar,
+)
 
 
 class NSEMCPError(RuntimeError):
@@ -99,29 +108,107 @@ def parse_bhavcopy_history(raw_payload: dict[str, Any], days: int) -> list[OHLCV
     return bars[-days:]
 
 
-def parse_corporate_actions_as_news(
+def parse_corporate_actions(
     symbol: str, raw_payload: dict[str, Any]
-) -> list[MarketNewsItem]:
-    """Convert official NSE corporate actions into read-only MarketNewsItem records."""
+) -> list[CorporateActionEvent]:
+    """Parse official NSE `get_corporate_actions` payload into typed events."""
     actions = (
         raw_payload.get("actions")
         or raw_payload.get("corporateActions")
         or raw_payload.get("data")
         or []
     )
+    events: list[CorporateActionEvent] = []
+    for entry in actions:
+        raw_type = str(entry.get("actionType") or "OTHER").strip().upper()
+        if raw_type not in {"SPLIT", "BONUS", "DIVIDEND", "OTHER"}:
+            raw_type = "OTHER"
+        factor = float(entry.get("adjustmentFactor") or 1.0)
+        if factor <= 0:
+            factor = 1.0
+        events.append(
+            CorporateActionEvent(
+                symbol=symbol.strip().upper(),
+                action_type=raw_type,  # type: ignore[arg-type]
+                ex_date=str(entry.get("exDate") or entry.get("ex_date") or "").strip(),
+                subject=str(
+                    entry.get("purpose") or entry.get("subject") or "Corporate Action"
+                ).strip(),
+                adjustment_factor=factor,
+            )
+        )
+    return events
+
+
+def parse_corporate_actions_as_news(
+    symbol: str, raw_payload: dict[str, Any]
+) -> list[MarketNewsItem]:
+    """Convert official NSE corporate actions into read-only MarketNewsItem records."""
+    events = parse_corporate_actions(symbol, raw_payload)
     items: list[MarketNewsItem] = []
-    for entry in actions[:5]:
-        subject = str(entry.get("subject") or entry.get("purpose") or "Corporate Action").strip()
-        ex_date = str(entry.get("exDate") or entry.get("ex_date") or "").strip()
-        remarks = str(entry.get("remarks") or entry.get("series") or "").strip()
+    for ev in events[:5]:
         items.append(
             MarketNewsItem(
                 source="NSE Corporate Actions (Bhavcopy MCP)",
-                headline=f"{symbol}: {subject}",
-                body=f"Ex-Date: {ex_date}. {remarks}".strip(),
-                published_at=ex_date or date.today().isoformat(),
+                headline=f"{ev.symbol}: {ev.subject}",
+                body=f"Ex-Date: {ev.ex_date}. ActionType: {ev.action_type}.",
+                published_at=ev.ex_date or date.today().isoformat(),
             )
         )
+    return items
+
+
+def parse_market_mood(
+    raw_payload: dict[str, Any],
+    high_vix_threshold: float = 22.0,
+    min_ad_ratio: float = 0.65,
+) -> MarketMood:
+    """Parse NSE `get_market_mood` payload into a deterministic MarketMood regime."""
+    if "error" in raw_payload:
+        raise NSEMCPError(f"nse-bhavcopy market mood error: {raw_payload['error']}")
+    vix_info = raw_payload.get("india_vix") or {}
+    breadth = raw_payload.get("stock_breadth") or {}
+    india_vix = float(vix_info.get("level") or 15.0)
+    advances = int(breadth.get("up") or 0)
+    declines = int(breadth.get("down") or 0)
+    ad_ratio = round(advances / max(declines, 1), 2) if (advances or declines) else 1.0
+
+    if india_vix >= high_vix_threshold or (declines > 0 and ad_ratio < min_ad_ratio):
+        regime: Literal["BULLISH", "NEUTRAL", "HIGH_VIX_RISK_OFF"] = "HIGH_VIX_RISK_OFF"
+    elif ad_ratio >= 1.25 and india_vix < 18.0:
+        regime = "BULLISH"
+    else:
+        regime = "NEUTRAL"
+
+    return MarketMood(
+        date=str(raw_payload.get("date") or date.today().isoformat()),
+        india_vix=india_vix,
+        advances=advances,
+        declines=declines,
+        ad_ratio=ad_ratio,
+        regime=regime,
+    )
+
+
+def parse_rss_headlines(xml_text: str, limit: int = 5) -> list[MarketNewsItem]:
+    """Parse untrusted RSS XML feed into MarketNewsItem list (must be sanitized downstream)."""
+    items: list[MarketNewsItem] = []
+    root = ET.fromstring(xml_text)
+    for node in root.findall(".//item")[:limit]:
+        title = (node.findtext("title") or "").strip()
+        desc = (node.findtext("description") or "").strip()
+        pub = (node.findtext("pubDate") or date.today().isoformat()).strip()
+        source_el = node.find("source")
+        src = (source_el.text or "Financial RSS").strip() if source_el is not None else "RSS"
+        if title:
+            items.append(
+                MarketNewsItem(
+                    source=src,
+                    headline=title,
+                    body=desc or title,
+                    published_at=pub,
+                )
+            )
     return items
 
 
@@ -136,18 +223,24 @@ class NSEClient:
         mode: Literal["fixture", "stdio", "nse_live"] = "fixture",
         cm_market_url: str = DEFAULT_CM_MARKET_URL,
         bhavcopy_url: str = DEFAULT_BHAVCOPY_URL,
+        enable_live_news_rss: bool = False,
         news_overrides: dict[str, list[MarketNewsItem]] | None = None,
         quote_overrides: dict[str, NSEQuote] | None = None,
         ohlcv_overrides: dict[str, list[OHLCVBar]] | None = None,
+        corporate_action_overrides: dict[str, list[CorporateActionEvent]] | None = None,
+        mood_override: MarketMood | None = None,
         simulate_error: str | None = None,
         event_hook: EventHook | None = None,
     ) -> None:
         self.mode = mode
         self.cm_market_url = cm_market_url
         self.bhavcopy_url = bhavcopy_url
+        self.enable_live_news_rss = enable_live_news_rss
         self._news_overrides = news_overrides or {}
         self._quote_overrides = quote_overrides or {}
         self._ohlcv_overrides = ohlcv_overrides or {}
+        self._corp_overrides = corporate_action_overrides or {}
+        self._mood_override = mood_override
         self._simulate_error = simulate_error
         self._event_hook = event_hook
         self._project_root = Path(__file__).resolve().parent.parent
@@ -236,6 +329,18 @@ class NSEClient:
                     time.sleep(0.5 * (attempt + 1))
         assert last_exc is not None
         raise last_exc
+
+    def _fetch_live_rss_news(self, symbol: str) -> list[MarketNewsItem]:
+        """Fetch untrusted public RSS news for symbol with strict timeout & safe fallback."""
+        query = quote_plus(f"{symbol} NSE India stock")
+        url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+        try:
+            with httpx2.Client(timeout=5.0, follow_redirects=True) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+                return parse_rss_headlines(resp.text, limit=4)
+        except Exception:
+            return []
 
     def lookup_live_symbol(self, query: str) -> list[str]:
         """Search NSE bhavcopy symbol catalog across 3,500+ listed equities."""
@@ -388,8 +493,100 @@ class NSEClient:
                 raise
             raise NSEMCPError(str(exc)) from exc
 
+    def get_corporate_actions(self, symbol: str) -> list[CorporateActionEvent]:
+        """Fetch split/bonus/dividend events for corporate-action OHLCV adjustment."""
+        normalized = symbol.strip().upper()
+        t0 = time.perf_counter()
+        try:
+            self._check_fault_injection("get_corporate_actions", normalized)
+            if normalized in self._corp_overrides:
+                events = self._corp_overrides[normalized]
+            elif self.mode == "nse_live":
+                today_str = date.today().isoformat()
+                from_str = (date.today() - timedelta(days=365)).isoformat()
+                data = self._call_http_tool(
+                    self.bhavcopy_url,
+                    "get_corporate_actions",
+                    {"symbol": normalized, "fromDate": from_str, "toDate": today_str},
+                )
+                events = parse_corporate_actions(normalized, data or {})
+            else:
+                events = []
+            latency = (time.perf_counter() - t0) * 1000.0
+            self._emit(
+                "mcp_tool_call",
+                "ok",
+                latency,
+                {"tool": "get_corporate_actions", "symbol": normalized, "count": len(events)},
+            )
+            return events
+        except Exception as exc:
+            latency = (time.perf_counter() - t0) * 1000.0
+            self._emit(
+                "mcp_tool_error",
+                "error",
+                latency,
+                {"tool": "get_corporate_actions", "symbol": normalized, "error": str(exc)},
+            )
+            if isinstance(exc, NSEMCPError):
+                raise
+            raise NSEMCPError(str(exc)) from exc
+
+    def get_market_mood(
+        self,
+        high_vix_threshold: float = 22.0,
+        min_ad_ratio: float = 0.65,
+    ) -> MarketMood:
+        """Fetch broad NSE India VIX & advance/decline market regime."""
+        t0 = time.perf_counter()
+        try:
+            self._check_fault_injection("get_market_mood")
+            if self._mood_override is not None:
+                mood = self._mood_override
+            elif self.mode == "nse_live":
+                data = self._call_http_tool(
+                    self.bhavcopy_url, "get_market_mood", {"date": "today"}
+                )
+                mood = parse_market_mood(
+                    data or {},
+                    high_vix_threshold=high_vix_threshold,
+                    min_ad_ratio=min_ad_ratio,
+                )
+            else:
+                mood = MarketMood(
+                    date=date.today().isoformat(),
+                    india_vix=14.2,
+                    advances=1650,
+                    declines=1100,
+                    ad_ratio=1.5,
+                    regime="BULLISH",
+                )
+            latency = (time.perf_counter() - t0) * 1000.0
+            self._emit(
+                "mcp_tool_call",
+                "ok",
+                latency,
+                {
+                    "tool": "get_market_mood",
+                    "india_vix": mood.india_vix,
+                    "regime": mood.regime,
+                },
+            )
+            return mood
+        except Exception as exc:
+            latency = (time.perf_counter() - t0) * 1000.0
+            self._emit(
+                "mcp_tool_error",
+                "error",
+                latency,
+                {"tool": "get_market_mood", "error": str(exc)},
+            )
+            if isinstance(exc, NSEMCPError):
+                raise
+            raise NSEMCPError(str(exc)) from exc
+
     def get_market_news(self, symbol: str) -> list[MarketNewsItem]:
-        """Fetch public news or corporate actions for an active NSE symbol."""
+        """Fetch public news, RSS headlines (if enabled), and corporate filings for symbol."""
         normalized = symbol.strip().upper()
         t0 = time.perf_counter()
         try:
@@ -408,6 +605,8 @@ class NSEClient:
                     {"symbol": normalized, "fromDate": from_str, "toDate": today_str},
                 )
                 items = parse_corporate_actions_as_news(normalized, data or {})
+                if self.enable_live_news_rss:
+                    items.extend(self._fetch_live_rss_news(normalized))
             else:
                 if normalized not in ACTIVE_NSE_SYMBOLS:
                     raise NSEMCPError(f"News feed unavailable for '{normalized}'.")
